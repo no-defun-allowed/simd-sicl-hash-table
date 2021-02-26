@@ -1,4 +1,4 @@
-(cl:in-package #:sicl-linear-probing-hash-table)
+(cl:in-package #:simd-hash-table)
 
 (defconstant +metadata-entries-per-group+ 16
   "The number of metadata entries we store per group.")
@@ -45,16 +45,17 @@
            (optimize (speed 3) (safety 0)))
   (let ((position 0))
     (declare (fixnum position))
+    (when (logtest bit-mask 1)
+      (funcall continuation 0))
     (loop
       (when (zerop bit-mask)
         (return-from call-with-matches))
+      (let ((next-jump (bsf (logand bit-mask #xFFFE))))
+        (setf bit-mask (ash bit-mask (- next-jump))
+              position (ldb (byte 62 0) (+ position next-jump))))
       (funcall continuation position)
       (when (= 1 bit-mask)
-        (return-from call-with-matches))
-      (let ((next-jump (bsf
-                        (sb-ext:truly-the (unsigned-byte 16) (1- bit-mask)))))
-        (setf bit-mask (ash bit-mask (- next-jump))
-              position (ldb (byte 62 0) (+ position next-jump)))))))
+        (return-from call-with-matches)))))
 
 (defmacro do-matches ((position bit-mask) &body body)
   "Evaluate BODY with POSITION bound to every match in the provided BIT-MASK."
