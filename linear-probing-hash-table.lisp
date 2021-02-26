@@ -38,6 +38,11 @@
   "A cheap and usually incorrect MOD, which works when DIVISOR is a power of two."
   (logand number (1- divisor)))
 
+(declaim (inline hash-key))
+(defun hash-key (table n)
+  (funcall (ht-hash-function table)
+           n))
+
 (declaim (inline call-with-key-index))
 (defun call-with-key-index (key hash-table metadata data size continuation)
   "Call CONTINUATION with each matching group, group position, offset in the group and actual position.
@@ -46,9 +51,9 @@ Compare this to WITH-ENTRY in the bucket hash table."
            (function continuation)
            (metadata-vector metadata)
            (data-vector data)
-           (fixnum size))
+           (fixnum size key))
   (multiple-value-bind (h1 h2)
-      (split-hash (funcall (ht-hash-function hash-table) key))
+      (split-hash (hash-key hash-table key))
     (let* ((groups      (floor size +metadata-entries-per-group+))
            (probe-position (cheap-mod h1 groups))
            (test        (ht-test hash-table)))
@@ -94,15 +99,25 @@ Compare this to WITH-ENTRY in the bucket hash table."
        (call-with-key-index ,key ,hash-table ,metadata ,data ,size
                             #',continuation))))
 
-(defun gethash (key hash-table &optional default)
+(defun gethash (key hash-table)
   (declare (optimize (speed 3)))
-  (let* ((metadata (ht-metadata hash-table))
-         (data     (ht-data hash-table))
-         (size     (ht-size hash-table)))
-    (with-key-index (key hash-table metadata data size)
-      (:position position)
-      (return-from gethash (values (value data position) t)))
-    (values default nil)))
+  (let ((data     (ht-data hash-table))
+        (cached-index (ht-cached-position hash-table)))
+    (locally
+        (declare (optimize (safety 0)))
+      ;; CACHED-INDEX will be always a valid index, as we only grow the table
+      ;; or keep it the same size.
+      (when (eq (svref data cached-index) key)
+        (return-from gethash (values (svref data (1+ cached-index)) t))))
+    (let* ((metadata (ht-metadata hash-table))
+           (size     (ht-size hash-table)))
+      (when (eq (key data cached-index) key)
+        (return-from gethash (values (value data cached-index) t)))
+      (with-key-index (key hash-table metadata data size)
+          (:position position)
+        (setf (ht-cached-position hash-table) position)
+        (return-from gethash (values (value data position) t)))
+      (values nil nil))))
 
 (defun remhash (key hash-table)
   (declare (optimize (speed 3)))
@@ -171,7 +186,7 @@ Compare this to WITH-ENTRY in the bucket hash table."
                      (ht-test hash-table)
                      t
                      key new-value
-                     (funcall (ht-hash-function hash-table) key))
+                     (hash-key hash-table key))
       (unless previously-key?
         (let ((count (incf (ht-count hash-table))))
           (when previously-empty?

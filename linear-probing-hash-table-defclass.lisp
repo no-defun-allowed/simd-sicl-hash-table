@@ -12,7 +12,8 @@
   (data (error "no data")
    :type simple-vector)
   (tombstone-count 0 :type fixnum)
-  (count 0 :type fixnum))
+  (count 0 :type fixnum)
+  (cached-position 0 :type (mod #.(1- most-positive-fixnum))))
 
 (defun make-linear-hash-table (&key (size 64) (test #'eql)
                                     (hash-function #'sxhash))
