@@ -1,4 +1,4 @@
-(cl:in-package #:sicl-linear-probing-hash-table)
+(cl:in-package #:simd-hash-table)
 
 (deftype data-vector ()
   `(simple-array t 1))
@@ -29,11 +29,6 @@
        ;; This form returns the next power of 2 above SIZE.
        (expt 2 (integer-length (1- size)))))
 
-(defmethod initialize-instance :after ((table linear-probing-hash-table) &key)
-  (let ((size (nearest-allowed-size (hash-table-size table))))
-    (setf (hash-table-data table) (make-data-vector size)
-          (hash-table-metadata table) (make-metadata-vector size))))
-
 (declaim (inline split-hash cheap-mod))
 (defun split-hash (hash)
   (declare ((unsigned-byte 64) hash))
@@ -53,10 +48,10 @@ Compare this to WITH-ENTRY in the bucket hash table."
            (data-vector data)
            (fixnum size))
   (multiple-value-bind (h1 h2)
-      (split-hash (sicl-hash-table:hash hash-table key))
+      (split-hash (funcall (ht-hash-function hash-table) key))
     (let* ((groups      (floor size +metadata-entries-per-group+))
            (probe-position (cheap-mod h1 groups))
-           (test        (%hash-table-test hash-table)))
+           (test        (ht-test hash-table)))
       (declare (metadata-vector metadata)
                (simple-vector   data)
                (function        test)
@@ -99,21 +94,21 @@ Compare this to WITH-ENTRY in the bucket hash table."
        (call-with-key-index ,key ,hash-table ,metadata ,data ,size
                             #',continuation))))
 
-(defmethod gethash (key (hash-table linear-probing-hash-table) &optional default)
+(defun gethash (key hash-table &optional default)
   (declare (optimize (speed 3)))
-  (let* ((metadata (hash-table-metadata hash-table))
-         (data     (hash-table-data hash-table))
-         (size     (hash-table-size hash-table)))
+  (let* ((metadata (ht-metadata hash-table))
+         (data     (ht-data hash-table))
+         (size     (ht-size hash-table)))
     (with-key-index (key hash-table metadata data size)
       (:position position)
       (return-from gethash (values (value data position) t)))
     (values default nil)))
 
-(defmethod remhash (key (hash-table linear-probing-hash-table))
+(defun remhash (key hash-table)
   (declare (optimize (speed 3)))
-  (let* ((metadata (hash-table-metadata hash-table))
-         (data     (hash-table-data hash-table))
-         (size     (hash-table-size hash-table)))
+  (let* ((metadata (ht-metadata hash-table))
+         (data     (ht-data hash-table))
+         (size     (ht-size hash-table)))
     (with-key-index (key hash-table metadata data size)
         (:probe-group probe-group :position position)
       (cond
@@ -121,13 +116,13 @@ Compare this to WITH-ENTRY in the bucket hash table."
          ;; If the group is full of entries and/or tombstones, then we have to
          ;; add another tombstone.
          (setf (metadata metadata position) +tombstone-metadata+)
-         (incf (hash-table-tombstone-count hash-table)))
+         (incf (ht-tombstone-count hash-table)))
         (t
          ;; Otherwise, we can keep this entry empty.
          (setf (metadata metadata position) +empty-metadata+)))
       (setf (key data position)   +empty+
             (value data position) +empty+)
-      (decf (%hash-table-count hash-table))
+      (decf (ht-count hash-table))
       (return-from remhash t))
     nil))
 
@@ -166,24 +161,23 @@ Compare this to WITH-ENTRY in the bucket hash table."
                         (= +empty-metadata+ old-metadata)))))
           (setf probe-position (cheap-mod (1+ probe-position) groups)))))))
 
-(defmethod (setf gethash) (new-value key hash-table &optional default)
+(defun (setf gethash) (new-value key hash-table &optional default)
   (declare (ignore default))
-  (let ((size (hash-table-size hash-table)))
+  (let ((size (ht-size hash-table)))
     (multiple-value-bind (previously-key? previously-empty?)
-        (add-mapping (hash-table-metadata hash-table)
-                     (hash-table-data hash-table)
+        (add-mapping (ht-metadata hash-table)
+                     (ht-data hash-table)
                      size
-                     (%hash-table-test hash-table)
+                     (ht-test hash-table)
                      t
                      key new-value
-                     (sicl-hash-table:hash hash-table key))
+                     (funcall (ht-hash-function hash-table) key))
       (unless previously-key?
-        (let ((count (incf (%hash-table-count hash-table))))
+        (let ((count (incf (ht-count hash-table))))
           (when previously-empty?
             (maybe-resize hash-table
                           count
-                          (+ (hash-table-tombstone-count hash-table)
-                             count)
+                          (+ (ht-tombstone-count hash-table) count)
                           size))))))
   new-value)
 
@@ -191,24 +185,24 @@ Compare this to WITH-ENTRY in the bucket hash table."
   ;; We resize (or compact) when size - 1 = count-with-tombstones, i.e.
   ;; there are no empty mappings now.
   (when (or (> count-with-tombstones
-               (* size (hash-table-rehash-threshold hash-table)))
+               (* size (ht-rehash-threshold hash-table)))
             (= (1- size) count-with-tombstones))
     (let* (;; If the actual entry count is greater than REHASH-THRESHOLD, then
            ;; grow, else just copy to remove tombstones.
-           (new-size (if (< (* size (hash-table-rehash-threshold hash-table))
+           (new-size (if (< (* size (ht-rehash-threshold hash-table))
                             count)
                          (* size 2)
                          size))
            (new-metadata (make-metadata-vector new-size))
            (new-data     (make-data-vector  new-size)))
-      (copy-table-data (hash-table-metadata hash-table)
-                       (hash-table-data hash-table)
+      (copy-table-data (ht-metadata hash-table)
+                       (ht-data hash-table)
                        size
                        new-metadata new-data
                        new-size)
-      (setf (%hash-table-size hash-table)    new-size
-            (hash-table-metadata hash-table) new-metadata
-            (hash-table-data hash-table)     new-data))))
+      (setf (ht-size hash-table)     new-size
+            (ht-metadata hash-table) new-metadata
+            (ht-data hash-table)     new-data))))
 
 (defun copy-table-data (old-metadata old-data old-size new-metadata new-data new-size)
   (declare (metadata-vector old-metadata new-metadata)
@@ -229,9 +223,9 @@ Compare this to WITH-ENTRY in the bucket hash table."
                      nil
                      key value hash)))))
 
-(defmethod maphash (function (hash-table linear-probing-hash-table))
-  (let ((data (hash-table-data hash-table)))
-    (dotimes (n (hash-table-size hash-table))
+(defun maphash (function hash-table)
+  (let ((data (ht-data hash-table)))
+    (dotimes (n (ht-size hash-table))
       (let ((key   (key data n))
             (value (value data n)))
         (unless (or (eql key +empty+)
@@ -239,21 +233,10 @@ Compare this to WITH-ENTRY in the bucket hash table."
           (funcall function key value)))))
   nil)
 
-(defmethod clrhash ((hash-table linear-probing-hash-table))
-  (let ((size (hash-table-size hash-table)))
-    (setf (hash-table-metadata hash-table) (make-metadata-vector size)
-          (hash-table-data hash-table)     (make-data-vector size)
-          (%hash-table-count hash-table) 0
-          (hash-table-tombstone-count hash-table) 0))
+(defun clrhash (hash-table)
+  (let ((size (ht-size hash-table)))
+    (setf (ht-metadata hash-table) (make-metadata-vector size)
+          (ht-data hash-table)     (make-data-vector size)
+          (ht-count hash-table)    0
+          (ht-tombstone-count hash-table) 0))
   hash-table)
-
-(defmethod make-hash-table-iterator ((hash-table linear-probing-hash-table))
-  (let ((position 0)
-        (data (hash-table-data hash-table))
-        (size (hash-table-size hash-table)))
-    (lambda ()
-      (if (= position size)
-          (values nil)
-          (multiple-value-prog1
-              (values t (key data position) (value data position))
-            (incf position))))))

@@ -1,4 +1,4 @@
-(cl:in-package #:sicl-linear-probing-hash-table)
+(cl:in-package #:simd-hash-table)
 
 (defconstant +metadata-entries-per-group+ 16
   "The number of metadata entries we store per group.")
