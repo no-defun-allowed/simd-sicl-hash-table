@@ -43,19 +43,25 @@
   (declare (function continuation)
            ((unsigned-byte 16) bit-mask)
            (optimize (speed 3) (safety 0)))
+  (when (zerop bit-mask)
+    (return-from call-with-matches))
   (let ((position 0))
     (declare (fixnum position))
-    (when (logtest bit-mask 1)
-      (funcall continuation 0))
+    ;; We have decided that the bit-mask is non-zero, so there must
+    ;; be a 1 in it. First, we find the first 1.
+    (setf position (bsf bit-mask)
+          bit-mask (ash bit-mask (- position)))
     (loop
-      (when (zerop bit-mask)
+      ;; Call the continuation with this position.
+      (funcall continuation position)
+      ;; We're done when the bit-mask is 1, i.e. there are no more 1 bits in
+      ;; this mask.
+      (when (= 1 bit-mask)
         (return-from call-with-matches))
+      ;; Find the next 1.
       (let ((next-jump (bsf (logand bit-mask #xFFFE))))
         (setf bit-mask (ash bit-mask (- next-jump))
-              position (ldb (byte 62 0) (+ position next-jump))))
-      (funcall continuation position)
-      (when (= 1 bit-mask)
-        (return-from call-with-matches)))))
+              position (ldb (byte 62 0) (+ position next-jump)))))))
 
 (defmacro do-matches ((position bit-mask) &body body)
   "Evaluate BODY with POSITION bound to every match in the provided BIT-MASK."
